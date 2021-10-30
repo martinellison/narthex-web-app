@@ -1,16 +1,22 @@
-/*! This file provides a way of constructing a webview based app. The idea is that the app developer provides an 'engine' that satisfies the [narthex_engine_trait] plus a simple main progrem, and the result is an app. See [narthex_engine_trait] for more information. See [narthex_wumpus] for an example of a main program that uses this crate. */
+/*! This file provides a way of constructing a webview based app. The idea is that the app developer provides an 'engine' that satisfies the [narthex_engine_trait] plus a simple main progrem, and the result is an app. See [narthex_engine_trait] for more information. See `narthex_wumpus` for an example of a main program that uses this crate. */
 use ansi_term::Colour::*;
 use anyhow::Result;
-use log::debug;
-use narthex_engine_trait::{ActionTrait, EngineTrait, Event, ResponseTrait};
+use log::{trace, error};
+use narthex_engine_trait::{ActionTrait, EngineTrait, Event, ResponseKind, ResponseTrait};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::de::from_str;
 use web_view::{escape, Content, WebView};
 macro_rules! web_trace {
-    () => { debug!() };
+    () => { trace!() };
     ($($arg:tt)*) => {
-        debug!("{}", Green.on(Black).paint(format!($($arg)*)));
+        trace!("{} ({}:{})", Green.on(Black).paint(format!($($arg)*)), std::file!(), std::line!());
+    };
+}
+macro_rules! web_error {
+    () => { error!() };
+    ($($arg:tt)*) => {
+        error!("{} ({}:{})", Red.on(Black).paint(format!($($arg)*)), std::file!(), std::line!());
     };
 }
 /// parameters to running the engine
@@ -54,7 +60,7 @@ where
     }
     /// build the web view and run the engine
     pub fn run_engine_with_webview(mut self, params: WebParams) -> Result<()> {
-        web_trace!("web view params are {:?}", &params);
+        web_trace!("running with engine, web view params are {:?}", &params);
         let initial_html = self.engine.initial_html()?;
         let webview: WebView<UserData<Engine>> = web_view::builder()
             .title(&params.title)
@@ -68,20 +74,32 @@ where
                     if params.verbose {
                         web_trace!("action: {}", &arg);
                     }
-                    let action = from_str(&arg.to_owned()).expect("cannot deserialise");
+                    let action = from_str(&arg.to_owned()).unwrap_or_else(|e| {
+                        web_error!("cannot deserialise: {:?}", &e);
+                        panic!("cannot deserialise");
+                    });
                     action
                 };
                 let response: Engine::Response = webview
                     .user_data_mut()
                     .engine
                     .execute(action)
-                    .expect("bad execution");
-                // web_trace!("response received: {}", &response);
+                    .unwrap_or_else(|e| {
+                        web_error!("bad execution: {:?}", &e);
+                        Engine::Response::new_with_error(&format!("bad execution: {:?}", &e))
+                    });
+
                 if response.shutdown_required() {
+                    // web_trace!("shutting down because response received: {}", &response);
+                    if let ResponseKind::Error(msg) = response.kind() {
+                        web_error!("system error: {}", msg);
+                    }
                     webview.exit();
                 } else {
-                    let rs: String =
-                        serde_json::ser::to_string(&response).expect("cannot serialise");
+                    let rs: String = serde_json::ser::to_string(&response).unwrap_or_else(|e| {
+                        web_error!("cannot serialise: {:?}", &e);
+                        panic!("cannot serialise");
+                    });
                     //                    web_trace!(
                     //                        "response: {}",
                     //                        if rs.len() < 105 { &rs } else { &rs[..100] }
